@@ -13,7 +13,7 @@ def send_whatsapp(msg):
         print(f"Erreur: {e}")
 
 print("V3 demarree 24/7 sur Koyeb")
-send_whatsapp(f"✅ V3 Scalper M5 lancée 24/7 sur Koyeb - {datetime.now().strftime('%H:%M')}")
+send_whatsapp(f"V3 Scalper M5 lancee 24/7 sur Koyeb - {datetime.now().strftime('%H:%M')}")
 
 while True:
     print("Bot en marche 24/7...")
