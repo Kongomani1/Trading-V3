@@ -1,6 +1,10 @@
 import os
 from flask import Flask
 import threading
+import urllib.request
+import urllib.parse
+import time
+from datetime import datetime
 
 web_app = Flask(__name__)
 @web_app.route('/')
@@ -11,17 +15,18 @@ def run_web():
     web_app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
-import urllib.request, urllib.parse, time, os
-from datetime import datetime
-MON_NUMERO = os.getenv("MON_NUMERO")
-APIKEY = os.getenv("APIKEY")
+
+WON_NUMERO = os.getenv("WON_NUMERO")
+API_KEY = os.getenv("API_KEY")
+
 def send_whatsapp(msg):
     try:
-        url = f"https://api.callmebot.com/whatsapp.php?phone={MON_NUMERO}&text={urllib.parse.quote(msg)}&apikey={APIKEY}"
+        url = f"https://api.callmebot.com/whatsapp.php?phone={WON_NUMERO}&text={urllib.parse.quote(msg)}&apikey={API_KEY}"
         urllib.request.urlopen(url, timeout=15).read()
     except Exception as e:
         print(e)
-print("V3 demarree")
+
+print("V3 demarre")
 send_whatsapp(f"V3 lancee {datetime.now().strftime('%H:%M')}")
 while True:
     time.sleep(60)
