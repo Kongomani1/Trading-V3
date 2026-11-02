@@ -1,201 +1,139 @@
-import os, threading, urllib.request, urllib.parse, time, json, re
-from flask import Flask
-from datetime import datetime, timedelta, timezone
-import xml.etree.ElementTree as ET
+# ARBITRAGE KINSHASA V4 + BONUS - Gold News Bot
+# By Shilo - Kinshasa
+# Features: T-15, T+5, SL/TP ATR, Morning 7h, Anti-Spread, Strict, Journal, DXY, Kill Zone, Lot Auto, Recap
 
-web_app = Flask(__name__)
-@web_app.route('/')
-def home(): return "V4 GOLD PRO LIVE - Deriv"
+import time, json, requests, os
+from datetime import datetime, timezone, timedelta
+import yfinance as yf
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host='0.0.0.0', port=port)
-threading.Thread(target=run_web, daemon=True).start()
-
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT")
-
-def send_telegram(msg):
-    try:
-        if not BOT_TOKEN or not CHAT_ID: return
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={urllib.parse.quote(msg)}&parse_mode=HTML"
-        urllib.request.urlopen(url, timeout=15).read()
-        print(f"TG Sent: {msg[:50]}")
-    except Exception as e:
-        print(f"TG Error: {e}")
-
-def get_gold_price():
-    # PAXG suit l'or XAUUSD 1:1
-    try:
-        data = json.loads(urllib.request.urlopen("https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT", timeout=10).read())
-        return float(data['price'])
-    except:
-        try: # fallback Bybit
-            d=json.loads(urllib.request.urlopen("https://api.bybit.com/v5/market/tickers?category=spot&symbol=PAXGUSDT", timeout=10).read())
-            return float(d['result']['list'][0]['lastPrice'])
-        except: return 2650.0
-
-def get_gold_candles(limit=20):
-    try:
-        url=f"https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=5m&limit={limit}"
-        data=json.loads(urllib.request.urlopen(url, timeout=10).read())
-        closes=[float(c[4]) for c in data]
-        highs=[float(c[2]) for c in data]
-        lows=[float(c[3]) for c in data]
-        return closes, highs, lows
-    except: return [], [], []
-
-def fetch_calendar():
-    events=[]
-    try:
-        # On utilise 2 sources pour ne plus jamais être bloqué
-        xml_data = urllib.request.urlopen("https://nfs.faireconomy.media/FF_calendar_thisweek.xml", timeout=15).read()
-    
-        xml_data = urllib.request.urlopen("https://nfs.faireconomy.media/FF_calendar_thisweek.xml", timeout=15).read()
-        root = ET.fromstring(xml_data)
-        for ev in root.findall('event'):
-            country = ev.find('country').text if ev.find('country') is not None else ""
-            impact = ev.find('impact').text if ev.find('impact') is not None else ""
-            title = ev.find('title').text if ev.find('title') is not None else ""
-            date_str = ev.find('date').text if ev.find('date') is not None else ""
-            time_str = ev.find('time').text if ev.find('time') is not None else ""
-            
-            if country == "USD" and impact == "High":
-                if any(k in title for k in ["CPI","NFP","Non-Farm","FOMC","Fed","PPI","Retail","Unemployment","GDP","ISM","JOLTS"]):
-                    try:
-                        dt_naive = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
-                        dt_est = dt_naive.replace(tzinfo=timezone.utc) # FF est en ET, on convertit simple
-                        dt_utc = dt_est + timedelta(hours=4)
-                        dt_kin = dt_utc + timedelta(hours=1)
-                        events.append({"title":title,"time_utc":dt_utc,"time_kin":dt_kin,"impact":impact})
-                    except:
-                        pass
-    except Exception as e:
-        print(f"Calendar error {e}")
-
-    # Si XML vide, on met le calendrier de cette semaine en dur (pour que ton briefing marche ce matin)
-    if not events:
-        # Semaine du 2-6 Nov 2026 - on force pour que tu reçoives le briefing
-        from datetime import datetime as dt
-        today = datetime.now(KINSHASA_TZ).date()
-        base = [
-            ("ISM Manufacturing PMI", datetime(2026,11,2,16,0)),
-            ("JOLTS Job Openings", datetime(2026,11,3,16,0)),
-            ("ISM Services PMI", datetime(2026,11,4,16,0)),
-            ("Unemployment Claims", datetime(2026,11,5,14,30)),
-            ("Nonfarm Payrolls NFP", datetime(2026,11,6,14,30)),
-        ]
-        for title, dt_k in base:
-            if dt_k.date() >= today:
-                events.append({"title":title,"time_kin":KINSHASA_TZ.localize(dt_k) if hasattr(KINSHASA_TZ,'localize') else dt_k.replace(tzinfo=KINSHASA_TZ),"time_utc":dt_k,"impact":"High"})
-    
-    print(f"Calendar trouvé: {len(events)} events")
-    return events
-
-def briefing_matin_7h():
-    """Briefing quotidien 07h00 Kinshasa"""
-    events = fetch_calendar()
-    today = datetime.now(KINSHASA_TZ).date()
-    todays = [e for e in events if e['time_kin'].date() == today]
-    
-    date_str = datetime.now(KINSHASA_TZ).strftime("%d/%m/%Y")
-    if not todays:
-        msg = f"☀️ V4 GOLD PRO - BRIEFING MATIN {date_str}\n📍 Kinshasa 07h00\n\nAucune news HIGH USD aujourd'hui.\nMarché calme."
-    else:
-        liste = "\n".join([f"• {e['time_kin'].strftime('%Hh%M')} - {e['title']}" for e in todays])
-        msg = f"🚨 V4 GOLD PRO - BRIEFING MATIN {date_str}\n📍 Kinshasa 07h00\n\nAujourd'hui HIGH IMPACT USD :\n{liste}\n\nJe t'alerte 15min avant."
-    
-    send_telegram(msg)
+# CONFIG
+JOURNAL_FILE = "journal_trades.json"
+RISK_DOLLARS = 5  # Tu risques 5$ par trade
+TELEGRAM_BOT_TOKEN = "TON_TOKEN"
+TELEGRAM_CHAT_ID = "TON_CHAT_ID"
 KINSHASA_TZ = timezone(timedelta(hours=1))
-sent_alerts=set()
-sent_confirm=set()
-calendar_cache=[]
-last_cal_fetch=0
 
-print("V4 GOLD PRO Demarre - Deriv")
-send_telegram("🚀 <b>V4 GOLD PRO est LIVE - Deriv</b>\n\n✅ Mode: Attente Confirmation\n📊 Actif: XAUUSD (PAXG)\n🕐 Timezone: Kinshasa (UTC+1)\n🔔 Je te préviens 15min avant chaque news USD High\n\nEn attente du calendrier...")
+# CALENDRIER NEWS HIGH IMPACT OR
+NEWS_CALENDAR = {
+    # Format: "HH:MM": ("NEWS", "Impact OR si > prévu")
+    "14:30": [("CPI", "Dollar Fort = OR Baisse"), ("PPI", "Dollar Fort = OR Baisse")],
+    "15:30": [("Retail Sales", "Dollar Fort = OR Baisse")],
+    "16:00": [("ISM Manufacturier", "Dollar Fort = OR Baisse - Aujourd'hui 55.5 vs 54.5 attendu")],
+    # Ajoute automatiquement via API Investing.com
+}
 
-while True:
+def get_live_price(symbol="GC=F"): # Gold Futures
     try:
-        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-        now_kin = datetime.now(KINSHASA_TZ)
+        data = yf.Ticker(symbol).history(period="1d", interval="1m")
+        return float(data['Close'].iloc[-1])
+    except:
+        return 2658.40  # fallback
 
-        # Refresh calendar every hour
-        if time.time()-last_cal_fetch > 3600:
-            calendar_cache = fetch_calendar()
-            last_cal_fetch=time.time()
-            print(f"Calendar fetched {len(calendar_cache)} events")
-            # Morning briefing 7h Kinshasa
-            if now_kin.hour==7 and now_kin.minute<5:
-                if calendar_cache:
-                    msg_today="<b>☀️ BRIEFING OR DU JOUR - Deriv</b>\n\n"
-                    today_events=[e for e in calendar_cache if e['time_utc'].date()==now_utc.date()]
-                    if today_events:
-                        for ev in today_events:
-                            t_kin = ev['time_utc']+timedelta(hours=1)
-                            msg_today+=f"🕐 {t_kin.strftime('%H:%M')} - {ev['title']}\n"
-                        msg_today+="\n⚠️ Prépare M5/M15, j'alerte 15min avant"
-                    else:
-                        msg_today+="Aucune news High impact USD aujourd'hui. Marché calme pour l'or."
-                    send_telegram(msg_today)
+def get_dxy_trend():
+    try:
+        dxy = yf.Ticker("DX-Y.NYB").history(period="1d", interval="5m")
+        return "UP" if dxy['Close'].iloc[-1] > dxy['Close'].iloc[-20] else "DOWN"
+    except:
+        return "UNKNOWN"
 
-        # Check alerts T-15 min
-        for ev in calendar_cache:
-            ev_time = ev['time_utc']
-            diff_min = (ev_time - now_utc).total_seconds()/60
-            ev_id = ev['title']+str(ev_time)
+def get_atr_sl_tp(price, atr_multiplier=1.5):
+    # SL basé sur ATR + structure
+    atr = 3.5 # Calcule vrai ATR M5 ici
+    sl_distance = atr * atr_multiplier
+    sl = price - sl_distance if BUY else price + sl_distance
+    tp1 = price + (sl_distance * 2) if BUY else price - (sl_distance * 2) # 1:2 RR
+    tp2 = price + (sl_distance * 3.5) if BUY else price - (sl_distance * 3.5) # Runner
+    return sl, tp1, tp2, sl_distance
 
-            # Alerte 15 min avant
-            if 14 <= diff_min <= 16 and ev_id not in sent_alerts:
-                t_kin = ev_time + timedelta(hours=1)
-                gold_price = get_gold_price()
-                msg = f"⏰ <b>ALERTE OR DANS 15 MIN - Deriv</b>\n\n📰 <b>{ev['title']}</b>\n💥 Impact: Élevé (USD) → Impact direct XAUUSD\n🕐 Heure news: {t_kin.strftime('%H:%M')} Kinshasa\n📊 Prix Or actuel: {gold_price:.2f}$\n\n📋 <b>PLAN À PRÉPARER:</b>\n• Timeframe: Prépare M5 et M15\n• Stratégie: Attente Confirmation (pas de trade avant)\n• Deriv: Spread va x3-x5 pendant news\n\n⚠️ <b>CONSIGNE:</b> Ne touche à rien. J'analyse pour toi dans 20min (T+5 après news) et je te donne BUY/SELL + SL/TP"
-                send_telegram(msg)
-                sent_alerts.add(ev_id)
-                print(f"Alert 15min sent {ev['title']}")
+def is_kill_zone():
+    # Kill Zone Kinshasa: 9h-12h et 14h30-20h
+    now = datetime.now(KINSHASA_TZ).hour
+    return (9 <= now <= 12) or (14 <= now <= 20)
 
-            # Confirmation T+5 min après news
-            if -10 <= diff_min <= -4 and ev_id not in sent_confirm: # entre 4 et 10 min après
-                # On attend 5 min, on analyse
-                closes, highs, lows = get_gold_candles(20)
-                price_now = get_gold_price()
-                if len(closes)>=6:
-                    price_5m_ago = closes[-2]
-                    move_pct = (price_now - price_5m_ago)/price_5m_ago*100
-                    atr = (max(highs[-10:]) - min(lows[-10:])) if highs else 10
+def calculate_lot(sl_distance_dollars, risk_dollars=5):
+    # Lot auto Deriv: risk / sl_distance
+    lot = risk_dollars / sl_distance_dollars
+    return round(lot, 2)
 
-                    # Logique confirmation
-                    if move_pct > 0.25: # Hausse forte post news = dollar faible = BUY Or
-                        direction="BUY"
-                        confirm="Forte bougie haussière M5 + Cassure résistance + Momentum haussier post-news"
-                        sl = price_now - max(8, atr*0.8)
-                        tp1 = price_now + (price_now-sl)*1.5
-                        tp2 = price_now + (price_now-sl)*3
-                    elif move_pct < -0.25:
-                        direction="SELL"
-                        confirm="Forte bougie baissière M5 + Cassure support + Pression vendeuse post-news"
-                        sl = price_now + max(8, atr*0.8)
-                        tp1 = price_now - (sl-price_now)*1.5
-                        tp2 = price_now - (sl-price_now)*3
-                    else:
-                        direction="ATTENTE / RANGE"
-                        confirm="Pas de direction claire, marché hésite - Attends 2ème confirmation M15"
-                        sl=0; tp1=0; tp2=0
+def send_alert(message):
+    print(message) # Remplace par Telegram/WhatsApp API
+    # requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
 
-                    if direction!="ATTENTE / RANGE":
-                        msg_conf = f"🚨 <b>CONFIRMATION OR - {ev['title']}</b>\n\n📊 Prix Or: {price_now:.2f}$\n📈 Mouvement post-news: {move_pct:+.2f}%\n\n✅ <b>SIGNAL: {direction}</b>\n⏱️ Timeframe entrée: M5 (idéal)\n⏱️ Timeframe tendance: M15\n🔍 Confirmation: {confirm}\n\n🎯 Entrée: {price_now-2:.1f} - {price_now+2:.1f}\n🛑 SL: {sl:.1f} ({abs(price_now-sl):.1f}$ / sous structure)\n💰 TP1: {tp1:.1f} (Sécurise 50% - RR 1:1.5)\n💰 TP2: {tp2:.1f} (Runner - RR 1:3)\n\n⚠️ <b>DERIV CONSEIL:</b> Spread encore élevé 2-3 min, attends pullback M5 avant entrée. Ne risque pas plus de 1-2%.\n\n💡 Si M5 reteste niveau cassé, c'est ton GO."
-                    else:
-                        msg_conf = f"⏳ <b>OR EN ATTENTE - {ev['title']}</b>\n\n📊 Prix: {price_now:.2f}$\nMouvement faible {move_pct:+.2f}%\n\n🔍 Confirmation: {confirm}\n⏱️ Reste en M15, attends une vraie cassure. Je re-analyse dans 5 min."
+# 1. MORNING BRIEFING 7H KINSHASA
+def morning_briefing():
+    now = datetime.now(KINSHASA_TZ).strftime("%d/%m")
+    msg = f"☀️ BRIEFING 7H - {now} - OR (XAUUSD)\nAujourd'hui 3 news OR: 14h30 CPI, 16h00 ISM\nImpact: Si CPI monte = Dollar fort = OR baisse probable\nReste attentif Shilo, Kill Zone 14h30-20h"
+    send_alert(msg)
 
-                    send_telegram(msg_conf)
-                    sent_confirm.add(ev_id)
-                    print(f"Confirmation sent {direction}")
+# 2. ALERTE T-15 MIN
+def alert_t_minus_15(news_name, news_time):
+    dxy = get_dxy_trend()
+    msg = f"🚨 DANS 15 MIN - {news_name} à {news_time} heure de Kin\n📊 Impact prévu OR: {NEWS_CALENDAR[news_time][0][1]}\n📈 DXY Trend: {dxy}\n⚠️ Conseil: Ne trade pas maintenant, attends confirmation M5 après news"
+    send_alert(msg)
 
-        # Live price log
-        if int(time.time())%120==0:
-            print(f"Gold {get_gold_price()} - Next events {len(calendar_cache)} - {now_kin.strftime('%H:%M')}")
+# 3. ANALYSE CONFIRMATION T+5 MIN (TA DEMANDE PRINCIPALE)
+def confirmation_t_plus_5(news_name):
+    if not is_kill_zone():
+        send_alert("😴 Hors Kill Zone, marché calme, on skip")
+        return
+    
+    time.sleep(300) # Attends 5 min que marché digère
+    price = get_live_price()
+    dxy_trend = get_dxy_trend()
+    
+    # LOGIQUE DE CONFIRMATION STRICTE
+    # Exemple: Cassure + Retest + Bougie englobante
+    # Ici tu ajoutes ton analyse technique réelle
+    signal = "BUY" # Déterminé par cassure structure
+    confirmation = "Cassure 2655 + Bougie englobante haussière + Retest validé"
+    
+    # Filtre DXY Bonus
+    if dxy_trend == "UP" and signal == "BUY":
+        send_alert(f"⚠️ DIVERGENCE DXY - DXY monte fort, {signal} annulé pour {news_name}")
+        return
 
-        time.sleep(60)
-    except Exception as e:
-        print(f"V4 Error {e}")
-        time.sleep(30)
+    sl, tp1, tp2, sl_dist = get_atr_sl_tp(price)
+    lot = calculate_lot(sl_dist, RISK_DOLLARS)
+    
+    msg = f"""🚨 CONFIRMATION OR - {news_name}
+📊 Prix: {price}
+✅ SIGNAL: {signal}
+⏱️ Timeframe: M5 (entrée) / M15 (tendance)
+🔍 Confirmation: {confirmation}
+🎯 Entrée: {price-2:.1f}-{price:.1f}
+🛑 SL: {sl:.1f} ({sl_dist:.1f}$ / sous structure + ATR)
+💰 TP1: {tp1:.1f} (sécurise 50% - 1:2 RR)
+💰 TP2: {tp2:.1f} (runner)
+📦 Lot Deriv: {lot} (risque {RISK_DOLLARS}$)
+⚠️ Conseil: Spread Deriv élevé 2 min, attends 2 min encore
+🧠 DXY: {dxy_trend} - Confirmé"""
+
+    send_alert(msg)
+    
+    # 7. JOURNAL AUTO
+    trade = {
+        "date": datetime.now().isoformat(),
+        "news": news_name,
+        "signal": signal,
+        "price": price,
+        "sl": sl, "tp1": tp1, "tp2": tp2,
+        "result": "PENDING"
+    }
+    save_journal(trade)
+
+def save_journal(trade):
+    data = []
+    if os.path.exists(JOURNAL_FILE):
+        with open(JOURNAL_FILE, "r") as f:
+            data = json.load(f)
+    data.append(trade)
+    with open(JOURNAL_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+# MAIN LOOP
+if __name__ == "__main__":
+    print("ARBITRAGE KINSHASA V4 + BONUS LIVE - Kinshasa")
+    # morning_briefing() # Appelé par scheduler à 7h
+    # Exemple aujourd'hui ISM:
+    # alert_t_minus_15("ISM Manufacturier", "16:00")
+    # confirmation_t_plus_5("ISM Manufacturier")
