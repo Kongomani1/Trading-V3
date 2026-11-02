@@ -45,11 +45,12 @@ def get_gold_candles(limit=20):
         return closes, highs, lows
     except: return [], [], []
 
-
-    def fetch_calendar():
+def fetch_calendar():
     events=[]
     try:
         # On utilise 2 sources pour ne plus jamais être bloqué
+        xml_data = urllib.request.urlopen("https://nfs.faireconomy.media/FF_calendar_thisweek.xml", timeout=15).read()
+    
         xml_data = urllib.request.urlopen("https://nfs.faireconomy.media/FF_calendar_thisweek.xml", timeout=15).read()
         root = ET.fromstring(xml_data)
         for ev in root.findall('event'):
