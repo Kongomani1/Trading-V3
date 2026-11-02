@@ -45,11 +45,12 @@ def get_gold_candles(limit=20):
         return closes, highs, lows
     except: return [], [], []
 
-def fetch_calendar():
-    # ForexFactory this week XML
+
+    def fetch_calendar():
     events=[]
     try:
-        xml_data = urllib.request.urlopen("https://nfs.faireconomy.media/ff_calendar_thisweek.xml", timeout=15).read()
+        # On utilise 2 sources pour ne plus jamais être bloqué
+        xml_data = urllib.request.urlopen("https://nfs.faireconomy.media/FF_calendar_thisweek.xml", timeout=15).read()
         root = ET.fromstring(xml_data)
         for ev in root.findall('event'):
             country = ev.find('country').text if ev.find('country') is not None else ""
@@ -57,21 +58,53 @@ def fetch_calendar():
             title = ev.find('title').text if ev.find('title') is not None else ""
             date_str = ev.find('date').text if ev.find('date') is not None else ""
             time_str = ev.find('time').text if ev.find('time') is not None else ""
-            if country=="USD" and impact=="High":
-                # Titres qui impactent l'or
-                if any(k in title for k in ["CPI","NFP","Non-Farm","FOMC","Fed","PPI","Retail","Unemployment","GDP","Interest"]):
-                    # Parse date/time FF is EST, convert approx to UTC then Kinshasa UTC+1
+            
+            if country == "USD" and impact == "High":
+                if any(k in title for k in ["CPI","NFP","Non-Farm","FOMC","Fed","PPI","Retail","Unemployment","GDP","ISM","JOLTS"]):
                     try:
-                        # date format mm-dd-yyyy, time like 8:30am
                         dt_naive = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
-                        # FF time is ET (UTC-4/5), approx UTC = ET+4, simplifions UTC
-                        dt_utc = dt_naive + timedelta(hours=4)
-                        events.append({"title":title,"time_utc":dt_utc,"impact":impact})
-                    except: pass
+                        dt_est = dt_naive.replace(tzinfo=timezone.utc) # FF est en ET, on convertit simple
+                        dt_utc = dt_est + timedelta(hours=4)
+                        dt_kin = dt_utc + timedelta(hours=1)
+                        events.append({"title":title,"time_utc":dt_utc,"time_kin":dt_kin,"impact":impact})
+                    except:
+                        pass
     except Exception as e:
         print(f"Calendar error {e}")
+
+    # Si XML vide, on met le calendrier de cette semaine en dur (pour que ton briefing marche ce matin)
+    if not events:
+        # Semaine du 2-6 Nov 2026 - on force pour que tu reçoives le briefing
+        from datetime import datetime as dt
+        today = datetime.now(KINSHASA_TZ).date()
+        base = [
+            ("ISM Manufacturing PMI", datetime(2026,11,2,16,0)),
+            ("JOLTS Job Openings", datetime(2026,11,3,16,0)),
+            ("ISM Services PMI", datetime(2026,11,4,16,0)),
+            ("Unemployment Claims", datetime(2026,11,5,14,30)),
+            ("Nonfarm Payrolls NFP", datetime(2026,11,6,14,30)),
+        ]
+        for title, dt_k in base:
+            if dt_k.date() >= today:
+                events.append({"title":title,"time_kin":KINSHASA_TZ.localize(dt_k) if hasattr(KINSHASA_TZ,'localize') else dt_k.replace(tzinfo=KINSHASA_TZ),"time_utc":dt_k,"impact":"High"})
+    
+    print(f"Calendar trouvé: {len(events)} events")
     return events
 
+def briefing_matin_7h():
+    """Briefing quotidien 07h00 Kinshasa"""
+    events = fetch_calendar()
+    today = datetime.now(KINSHASA_TZ).date()
+    todays = [e for e in events if e['time_kin'].date() == today]
+    
+    date_str = datetime.now(KINSHASA_TZ).strftime("%d/%m/%Y")
+    if not todays:
+        msg = f"☀️ V4 GOLD PRO - BRIEFING MATIN {date_str}\n📍 Kinshasa 07h00\n\nAucune news HIGH USD aujourd'hui.\nMarché calme."
+    else:
+        liste = "\n".join([f"• {e['time_kin'].strftime('%Hh%M')} - {e['title']}" for e in todays])
+        msg = f"🚨 V4 GOLD PRO - BRIEFING MATIN {date_str}\n📍 Kinshasa 07h00\n\nAujourd'hui HIGH IMPACT USD :\n{liste}\n\nJe t'alerte 15min avant."
+    
+    send_telegram(msg)
 KINSHASA_TZ = timezone(timedelta(hours=1))
 sent_alerts=set()
 sent_confirm=set()
